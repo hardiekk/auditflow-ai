@@ -1,0 +1,97 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: auditflow
+      POSTGRES_PASSWORD: auditflow
+      POSTGRES_DB: auditflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auditflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://auditflow:auditflow@postgres:5432/auditflow
+      REDIS_URL: redis://redis:6379/0
+      QUEUE_BACKEND: arq
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me}
+      STORAGE_BACKEND: local
+      STORAGE_LOCAL_PATH: /data/storage
+      AI_PROVIDER: auto
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      API_CORS_ORIGINS: http://localhost:3000
+      DEMO_ORG_NAME: Northwind Logistics
+      DEMO_ADMIN_EMAIL: admin@auditflow.demo
+      DEMO_ADMIN_PASSWORD: AuditFlow!demo
+    volumes:
+      - storage:/data/storage
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             python -m app.seed &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  worker:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://auditflow:auditflow@postgres:5432/auditflow
+      REDIS_URL: redis://redis:6379/0
+      QUEUE_BACKEND: arq
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me}
+      STORAGE_BACKEND: local
+      STORAGE_LOCAL_PATH: /data/storage
+      AI_PROVIDER: auto
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+    volumes:
+      - storage:/data/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: arq app.workers.worker.WorkerSettings
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  storage:
